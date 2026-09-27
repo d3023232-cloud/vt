@@ -16,8 +16,8 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
-# Префиксы колбэков, которые относятся исключительно к админ-панели
-ADMIN_CALLBACK_PREFIXES: tuple[str, ...] = ("admin_", "confirm:")
+# Префиксы/точные значения колбэков, которые относятся исключительно к админ-панели
+ADMIN_CALLBACK_PREFIXES: tuple[str, ...] = ("admin_", "confirm:", "back_admin")
 
 
 def is_admin(user_id: int) -> bool:

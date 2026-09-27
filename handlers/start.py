@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from config import config
 from keyboards.main_kb import auction_channel_keyboard, main_keyboard
 from services import auction_service, vape_service
-from utils.helpers import channel_mention, format_vape
+from utils.helpers import channel_mention, format_stats_block, format_vape
 
 logger = logging.getLogger(__name__)
 router: Router = Router()
@@ -135,11 +135,17 @@ async def cb_show_auction(callback: CallbackQuery) -> None:
             text = (
                 f"🔨 <b>Аукцион #{auction['id']}</b> — "
                 f"{status_map.get(auction['status'], auction['status'])}\n"
-                f"📦 Лот: <b>{auction['lot_name']}</b> (x{auction['multiplier']}, "
-                f"{auction['power']} зат./мин, бак {auction['max_puffs']}, "
-                f"состояние {auction['condition']}%)\n"
-                f"Партия: {auction['quantity']} шт, продано: {auction['lots_sold']}\n"
-                f"💰 Стартовая цена: {auction['start_price']} Паров\n\n"
+                + format_stats_block(
+                    name=auction["lot_name"],
+                    multiplier=auction["multiplier"],
+                    power=auction["power"],
+                    max_puffs=auction["max_puffs"],
+                    condition=auction["condition"],
+                    quantity=auction["quantity"],
+                    lots_sold=auction["lots_sold"],
+                    indent="   ",
+                )
+                + f"\n💰 Стартовая цена: {auction['start_price']} Паров\n\n"
                 f"Жми кнопки [+100]/[+250]/[+500]/[+1000] под постом в {channel_mention()}"
             )
         await callback.message.edit_text(

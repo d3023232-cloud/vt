@@ -19,7 +19,7 @@ from config import config
 from database import DATABASE_PATH, execute_query, fetch_all, fetch_one
 from services import scheduler_service
 from services.vape_service import give_auction_vape
-from utils.helpers import fmt_dt, now_utc
+from utils.helpers import fmt_dt, format_stats_block, now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +123,15 @@ def _lot_caption(auction: dict[str, Any], bid_row: dict[str, Any] | None, ends_a
     lines: list[str] = [
         f"🔨 <b>АУКЦИОН #{auction['id']}</b>",
         f"📦 Лот: <b>{auction['lot_name']}</b>",
-        f"💠 Множитель: x{auction['multiplier']} | Мощность: {auction['power']} зат./мин",
-        f"🛢 Бак: {auction['max_puffs']} затяжек | Состояние: {auction['condition']}%",
-        f"📦 Партия: {auction['quantity']} шт, продано: {auction['lots_sold']}",
+        format_stats_block(
+            multiplier=auction["multiplier"],
+            power=auction["power"],
+            max_puffs=auction["max_puffs"],
+            condition=auction["condition"],
+            quantity=auction["quantity"],
+            lots_sold=auction["lots_sold"],
+            indent="   ",
+        ),
     ]
     status: str = auction["status"]
     if status == "announced":
