@@ -36,6 +36,9 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     )
+    # APScheduler спамит INFO-логами каждые 5 секунд (Running/executed _timer_job) —
+    # оставляем только предупреждения и ошибки планировщика.
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
     # Инициализация базы данных (создание таблиц при первом запуске)
     await init_db()
