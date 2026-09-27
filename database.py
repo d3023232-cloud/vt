@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS auctions (
     message_id        INTEGER,                            -- ID поста в канале
     current_lot_number INTEGER DEFAULT 1,                 -- текущий лот из партии
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    starts_at         TIMESTAMP,                          -- момент старта торгов (для обратного отсчёта в анонсе)
     started_at        TIMESTAMP,
     finished_at       TIMESTAMP
 );
@@ -90,10 +91,16 @@ CREATE INDEX IF NOT EXISTS idx_auctions_status ON auctions(status);
 
 
 async def init_db() -> None:
-    """Создаёт все таблицы при первом запуске бота."""
+    """Создаёт все таблицы при первом запуске бота и выполняет мягкие миграции."""
     try:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.executescript(SCHEMA_SQL)
+            # Мягкая миграция: добавляем starts_at, если колонки ещё нет (старые БД)
+            cursor = await db.execute("PRAGMA table_info(auctions)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "starts_at" not in columns:
+                await db.execute("ALTER TABLE auctions ADD COLUMN starts_at TIMESTAMP")
+                logger.info("Миграция: добавлена колонка auctions.starts_at")
             await db.commit()
         logger.info("База данных инициализирована: %s", DATABASE_PATH)
     except aiosqlite.Error:

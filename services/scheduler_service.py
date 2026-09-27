@@ -77,6 +77,19 @@ async def _timer_job() -> None:
         logger.exception("Ошибка задачи обновления таймера")
 
 
+async def _announce_timer_job() -> None:
+    """Задача раз в минуту: обновляет обратный отсчёт до старта торгов в посте-анонсе.
+
+    Пока до старта больше минуты, пост обновляется раз в минуту (число минут
+    меняется); посекундный отсчёт последних 60 секунд обеспечивает _timer_job.
+    """
+    assert _bot is not None
+    try:
+        await auction_service.update_announce_countdown(_bot)
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка задачи обновления анонса")
+
+
 async def _start_bidding_job(auction_id: int) -> None:
     """Разовая задача: старт торгов по анонсированному аукциону."""
     assert _bot is not None
@@ -112,6 +125,9 @@ def init_scheduler(bot: Bot) -> None:
     scheduler.add_job(_puff_job, "interval", minutes=1, id="puff_job", replace_existing=True)
     # Каждые 5 секунд — обновление таймера аукциона
     scheduler.add_job(_timer_job, "interval", seconds=5, id="timer_job", replace_existing=True)
+    # Каждую минуту — обновление обратного отсчёта в посте-анонсе
+    scheduler.add_job(_announce_timer_job, "interval", minutes=1, id="announce_timer_job",
+                      replace_existing=True)
     if not scheduler.running:
         scheduler.start()
     logger.info("APScheduler запущен (добыча: 1 мин, таймер: 5 сек)")

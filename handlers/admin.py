@@ -9,14 +9,15 @@ import logging
 from typing import Any
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import config
-from keyboards.admin_kb import admin_back_keyboard, admin_keyboard, auction_confirm_keyboard
+from keyboards.admin_kb import (admin_back_keyboard, admin_keyboard,
+                           auction_confirm_keyboard, wizard_cancel_keyboard)
 from services import auction_service, scheduler_service, vape_service
 from utils.helpers import channel_mention, format_stats_block
 
@@ -25,11 +26,12 @@ router: Router = Router()
 
 
 class AuctionCreateStates(StatesGroup):
-    """FSM-состояния мастера создания аукциона (три шага)."""
+    """FSM-состояния мастера создания аукциона (четыре шага)."""
 
-    waiting_name = State()      # Шаг 1/3: название лота
-    waiting_params = State()    # Шаг 2/3: пять чисел через пробел
-    waiting_price = State()     # Шаг 3/3: стартовая цена
+    waiting_name = State()      # Шаг 1/4: название лота
+    waiting_params = State()    # Шаг 2/4: пять чисел через пробел
+    waiting_delay = State()     # Шаг 3/4: через сколько минут начнутся торги
+    waiting_price = State()     # Шаг 4/4: стартовая цена
 
 
 class VapeGiveStates(StatesGroup):
@@ -45,17 +47,99 @@ class VapeRemoveStates(StatesGroup):
     waiting_user = State()   # Ввод Telegram ID игрока
 
 
-@router.message(Command("admin"))
-async def cmd_admin(message: Message, is_admin: bool) -> None:
-    """Команда /admin — открывает админ-панель (только ADMIN_ID, см. middleware)."""
-    if not is_admin:
-        # Middleware уже должен был пропустить сюда только админа — двойная защита
-        return
+# Все FSM-состояния админ-мастеров — для универсальной кнопки «🛑 Отмена»
+WIZARD_STATES: tuple[type[State], ...] = (
+    AuctionCreateStates.waiting_name,
+    AuctionCreateStates.waiting_params,
+    AuctionCreateStates.waiting_delay,
+    AuctionCreateStates.waiting_price,
+    VapeGiveStates.waiting_user,
+    VapeGiveStates.waiting_params,
+    VapeRemoveStates.waiting_user,
+)
+
+
+def _parse_delay(raw: str) -> int | None:
+    """Разбирает задержку старта торгов: минуты ('5', '5м', '5 мин') или секунды ('30с').
+
+    Args:
+        raw: пользовательский ввод одной строкой.
+
+    Returns:
+        Целое число секунд >= 10 либо None, если ввод некорректен.
+    """
+    text: str = raw.strip().lower().replace(",", ".")
+    if not text:
+        return None
+    secs_suffixes: tuple[str, ...] = ("сек", "secs", "sec", "s", "с")
+    mins_suffixes: tuple[str, ...] = ("мин", "minutes", "minute", "min", "m", "м")
+    number_part: str = text
+    in_seconds: bool = False
+    if text.endswith(secs_suffixes):
+        number_part = text[: -max(len(s) for s in secs_suffixes if text.endswith(s))].strip()
+        in_seconds = True
+    elif text.endswith(mins_suffixes):
+        number_part = text[: -max(len(s) for s in mins_suffixes if text.endswith(s))].strip()
     try:
+        value: float = float(number_part)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    seconds: int = int(value) if in_seconds else int(round(value * 60))
+    return seconds if 10 <= seconds <= 24 * 3600 else None
+
+
+def _fmt_delay(seconds: int) -> str:
+    """Красиво форматирует задержку старта для превью ('30 сек' / '5 мин')."""
+    if seconds < 60:
+        return f"{seconds} сек"
+    minutes = seconds // 60
+    return f"{minutes} мин" if seconds % 60 == 0 else f"{minutes} мин {seconds % 60} сек"
+
+
+@router.message(CommandObj())
+async def cmd_any_command(message: Message, state: FSMContext) -> None:
+    """Любая команда (включая /admin и все игровые) сбрасывает активный мастер.
+
+    Пока идёт мастер (создание аукциона, выдача/изъятие подиков), любой ввод
+    перехватывается его шагами; этот outer-хендлер до срабатывания шагов
+    сбрасывает FSM, поэтому команды (/start, /help, /auction, повторный
+    /admin) проходят как обычно и не вызывают ошибку «неправильная комбинация».
+    """
+    try:
+        current: str | None = await state.get_state()
+        if current and any(current == str(s) for s in WIZARD_STATES):
+            await state.clear()
+            logger.info("Команда %r прервала активный мастер (состояние %s)",
+                        (message.text or "")[:32], current)
+    except Exception:
+        logger.exception("Ошибка сброса мастера командой")
+
+
+@router.message(CommandStart(), F.chat.type == "private", flags={"skip": {"wizard_break"}})
+async def observe_start(message: Message, state: FSMContext) -> None:
+    """Только для админа: запоминает, что игрок нажал /start.
+
+    Нужен, чтобы при следующем нажатии «🛑 Отмена» (после перехода в роутер
+    start) мастер создания аукциона отменился полностью, а не только FSM.
+    """
+    try:
+        if await state.get_state():
+            await state.update_data(start_seen=True)
+    except Exception:
+        logger.exception("Ошибка наблюдения за /start")
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message, state: FSMContext) -> None:
+    """Команда /admin — открывает админ-панель (только ADMIN_ID, см. middleware)."""
+    try:
+        await state.clear()
         await message.answer(
             f"🛠 <b>Админ-панель Vape Tycoon</b>\n\n"
             f"Канал аукционов: {channel_mention()} (<code>{config.auction_channel_id}</code>)\n"
-            f"Анонс → старт: {config.auction_announce_minutes} мин | "
+            f"Анонс → старт: {config.auction_announce_minutes} мин (по умолчанию) | "
             f"Таймер ставки: {config.bid_timer_seconds} сек | "
             f"Перерыв между лотами: {config.lot_break_minutes} мин",
             reply_markup=admin_keyboard(), parse_mode="HTML",
@@ -66,17 +150,18 @@ async def cmd_admin(message: Message, is_admin: bool) -> None:
 
 @router.callback_query(F.data == "admin_create")
 async def cb_admin_create(callback: CallbackQuery, state: FSMContext) -> None:
-    """Шаг 1/3: запрашиваем название лота."""
+    """Шаг 1/4: запрашиваем название лота."""
     try:
         if await auction_service.has_active_auction():
             await callback.answer("⛔ Уже есть активный аукцион — сначала заверши или отмени его.",
                                   show_alert=True)
             return
+        await state.clear()
         await state.set_state(AuctionCreateStates.waiting_name)
         await callback.message.edit_text(
-            "➕ <b>Создание аукциона — шаг 1 из 3</b>\n\n"
+            "➕ <b>Создание аукциона — шаг 1 из 4</b>\n\n"
             "Введи <b>название лота</b> (например: 'Ghost Mod X'):",
-            parse_mode="HTML",
+            parse_mode="HTML", reply_markup=wizard_cancel_keyboard(),
         )
         await callback.answer()
     except Exception:
@@ -86,7 +171,7 @@ async def cb_admin_create(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(AuctionCreateStates.waiting_name, F.text)
 async def step_name(message: Message, state: FSMContext) -> None:
-    """Обрабатывает ввод названия лота, переходит к шагу 2/3."""
+    """Обрабатывает ввод названия лота, переходит к шагу 2/4."""
     try:
         name: str = (message.text or "").strip()
         if not name or len(name) > 64:
@@ -95,13 +180,13 @@ async def step_name(message: Message, state: FSMContext) -> None:
         await state.update_data(lot_name=name)
         await state.set_state(AuctionCreateStates.waiting_params)
         await message.answer(
-            "➕ <b>Создание аукциона — шаг 2 из 3</b>\n\n"
+            "➕ <b>Создание аукциона — шаг 2 из 4</b>\n\n"
             "Введи параметры в формате:\n"
             "<code>множитель / мощность / макс_затяжек / состояние% / кол-во_штук</code>\n\n"
             "Пример: <code>7 35 700 100 3</code>\n\n"
             "Диапазоны: множитель 1..100, мощность 1..1000, бак 10..100000, "
             "состояние 1..100%, количество 1..10.",
-            parse_mode="HTML",
+            parse_mode="HTML", reply_markup=wizard_cancel_keyboard(),
         )
     except Exception:
         logger.exception("Ошибка шага name")
@@ -138,7 +223,7 @@ def _parse_params(raw: str) -> tuple[bool, str, dict[str, int]]:
 
 @router.message(AuctionCreateStates.waiting_params, F.text)
 async def step_params(message: Message, state: FSMContext) -> None:
-    """Валидирует пять чисел, показывает превью, переходит к шагу 3/3."""
+    """Валидирует пять чисел, показывает превью, переходит к шагу 3/4."""
     try:
         ok, err, params = _parse_params((message.text or "").strip())
         if not ok:
@@ -146,9 +231,9 @@ async def step_params(message: Message, state: FSMContext) -> None:
             return
         data = await state.get_data()
         await state.update_data(**params)
-        await state.set_state(AuctionCreateStates.waiting_price)
+        await state.set_state(AuctionCreateStates.waiting_delay)
         preview: str = (
-            "➕ <b>Создание аукциона — шаг 3 из 3</b>\n\n"
+            "➕ <b>Создание аукциона — шаг 3 из 4</b>\n\n"
             f"📦 Лот: <b>{data['lot_name']}</b>\n"
             + format_stats_block(
                 multiplier=params["multiplier"],
@@ -158,11 +243,39 @@ async def step_params(message: Message, state: FSMContext) -> None:
                 quantity=params["quantity"],
                 indent="   ",
             )
-            + "\n\nТеперь введи <b>стартовую цену</b> (целое число больше 0):"
+            + "\n\nЧерез сколько минут после анонса <b>начать торги</b>?\n"
+            "Примеры: <code>15</code> (минут), <code>5 мин</code>, <code>90 сек</code>.\n"
+            "Минимум 10 секунд, максимум 24 часа."
         )
-        await message.answer(preview, parse_mode="HTML")
+        await message.answer(preview, parse_mode="HTML", reply_markup=wizard_cancel_keyboard())
     except Exception:
         logger.exception("Ошибка шага params")
+        await state.clear()
+        await message.answer("⚠️ Ошибка, мастер прерван.")
+
+
+@router.message(AuctionCreateStates.waiting_delay, F.text)
+async def step_delay(message: Message, state: FSMContext) -> None:
+    """Валидирует задержку старта торгов, переходит к шагу 4/4 (цена)."""
+    try:
+        seconds: int | None = _parse_delay((message.text or "").strip())
+        if seconds is None:
+            await message.answer(
+                "⚠️ Введи время до старта торгов, например <code>15</code> (минут) "
+                "или <code>90 сек</code>. От 10 секунд до 24 часов.",
+                parse_mode="HTML",
+            )
+            return
+        await state.update_data(start_delay_seconds=seconds)
+        await state.set_state(AuctionCreateStates.waiting_price)
+        await message.answer(
+            "➕ <b>Создание аукциона — шаг 4 из 4</b>\n\n"
+            f"Торги начнутся через <b>{_fmt_delay(seconds)}</b> после анонса.\n\n"
+            "Теперь введи <b>стартовую цену</b> (целое число больше 0):",
+            parse_mode="HTML", reply_markup=wizard_cancel_keyboard(),
+        )
+    except Exception:
+        logger.exception("Ошибка шага delay")
         await state.clear()
         await message.answer("⚠️ Ошибка, мастер прерван.")
 
@@ -181,6 +294,8 @@ async def step_price(message: Message, state: FSMContext) -> None:
             return
         data: dict[str, Any] = await state.get_data()
         await state.update_data(start_price=price)
+        delay_seconds: int = int(data.get("start_delay_seconds")
+                                 or config.auction_announce_minutes * 60)
         final_preview: str = (
             "📋 <b>Финальное превью аукциона</b>\n\n"
             f"📦 Лот: <b>{data['lot_name']}</b>\n"
@@ -194,7 +309,7 @@ async def step_price(message: Message, state: FSMContext) -> None:
             )
             + f"\n💰 Стартовая цена: {price} Паров\n"
             f"📢 Канал публикации: {channel_mention()} (<code>{config.auction_channel_id}</code>)\n"
-            f"⏳ Старт торгов через {config.auction_announce_minutes} мин после анонса\n\n"
+            f"⏳ Старт торгов через {_fmt_delay(delay_seconds)} после анонса\n\n"
             "Запускать?"
         )
         # draft_id = хеш данных FSM; используется только как метка подтверждения
@@ -230,6 +345,8 @@ async def cb_confirm_launch(callback: CallbackQuery, state: FSMContext, is_admin
             await callback.answer("⚠️ Данные мастера потеряны, начни заново.", show_alert=True)
             await state.clear()
             return
+        delay_seconds: int = int(data.get("start_delay_seconds")
+                                 or config.auction_announce_minutes * 60)
         auction_id: int = await auction_service.create_auction(
             lot_name=str(data["lot_name"]),
             multiplier=int(data["multiplier"]),
@@ -238,6 +355,7 @@ async def cb_confirm_launch(callback: CallbackQuery, state: FSMContext, is_admin
             condition=int(data["condition"]),
             quantity=int(data["quantity"]),
             start_price=int(data["start_price"]),
+            delay_seconds=delay_seconds,
         )
         await state.clear()
         # Публикуем анонс в канал (с проверкой прав бота внутри сервиса)
@@ -249,31 +367,54 @@ async def cb_confirm_launch(callback: CallbackQuery, state: FSMContext, is_admin
             )
             await callback.answer()
             return
-        # Планируем старт торгов через AUCTION_ANNOUNCE_MINUTES минут
-        scheduler_service.schedule_auction_start(auction_id, config.auction_announce_minutes)
+        # Планируем старт торгов через выбранное админом время
+        scheduler_service.schedule_auction_start(auction_id, delay_seconds)
         await callback.message.edit_text(
             f"✅ <b>Аукцион #{auction_id} запущен!</b>\n"
-            f"📢 Анос опубликован в канале {channel_mention()}.\n"
-            f"⏳ Торги начнутся через {config.auction_announce_minutes} мин.",
+            f"📢 Анонс опубликован в канале {channel_mention()}.\n"
+            f"⏳ Торги начнутся через {_fmt_delay(delay_seconds)} "
+            f"(в канале идёт обратный отсчёт).",
             parse_mode="HTML",
         )
         await callback.answer()
     except ValueError as exc:
         # Ожидаемые ошибки валидации (например, уже есть активный аукцион)
         logger.warning("Отказ в создании аукциона: %s", exc)
-        await callback.answer(f"⛔ {exc}", show_alert=True)
-    except Exception:
-        logger.exception("Ошибка запуска аукциона")
+        await callback.answer(f"⚠️ {exc}", show_alert=True)
         await state.clear()
-        await callback.answer("⚠️ Ошибка при создании аукциона.", show_alert=True)
+    except Exception:
+        logger.exception("Ошибка confirm_launch")
+        await callback.answer("⚠️ Ошибка запуска аукциона.", show_alert=True)
+        await state.clear()
 
 
 @router.callback_query(F.data == "admin_cancel_wizard")
 async def cb_cancel_wizard(callback: CallbackQuery, state: FSMContext) -> None:
-    """Кнопка «Отмена» мастера создания аукциона."""
-    await state.clear()
-    await callback.message.edit_text("🛑 Мастер создания аукциона отменён.", reply_markup=admin_keyboard())
-    await callback.answer()
+    """Кнопка «🛑 Отмена»: полностью прерывает любой админ-мастер.
+
+    Если перед отменой был нажат /start (команда прервала мастер и увела в
+    главное меню), дополнительно возвращаем админ-панель под сообщением.
+    """
+    try:
+        data: dict[str, Any] = await state.get_data()
+        start_seen: bool = bool(data.get("start_seen"))
+        await state.clear()
+        text: str = "🛑 Мастер создания/выдачи отменён."
+        if start_seen:
+            await callback.message.answer(
+                f"{text}\n\n🛠 <b>Админ-панель Vape Tycoon</b>",
+                reply_markup=admin_keyboard(), parse_mode="HTML",
+            )
+        else:
+            await callback.message.edit_text(text)
+        await callback.answer()
+    except Exception:
+        logger.exception("Ошибка admin_cancel_wizard")
+        try:
+            await state.clear()
+            await callback.answer("⚠️ Ошибка.", show_alert=True)
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "admin_stats")
@@ -366,8 +507,8 @@ async def cb_admin_give(callback: CallbackQuery, state: FSMContext) -> None:
             "Введи <b>Telegram ID игрока</b>, которому выдаём подик\n"
             "(например: <code>123456789</code>). Игрок может быть ещё не зарегистрирован — "
             "он будет зарегистрирован автоматически.\n\n"
-            "Для выхода нажми «Отмена».",
-            parse_mode="HTML", reply_markup=admin_back_keyboard(),
+            "Для выхода нажми «🛑 Отмена».",
+            parse_mode="HTML", reply_markup=wizard_cancel_keyboard(),
         )
         await callback.answer()
     except Exception:
@@ -394,7 +535,7 @@ async def give_step_user(message: Message, state: FSMContext) -> None:
             "Пример: <code>Ghost Mod X 7 35 700 100 1</code>\n\n"
             "Диапазоны: множитель 1..100, мощность 1..1000, бак 10..100000, "
             "состояние 1..100%, количество 1..10.",
-            parse_mode="HTML",
+            parse_mode="HTML", reply_markup=wizard_cancel_keyboard(),
         )
     except Exception:
         logger.exception("Ошибка шага выдачи (user)")
@@ -468,8 +609,8 @@ async def cb_admin_remove(callback: CallbackQuery, state: FSMContext) -> None:
             "Введи <b>Telegram ID игрока</b>, у которого забираем подики "
             "(например: <code>123456789</code>).\n"
             "Дальше появится список его подиков с кнопками удаления.\n\n"
-            "Для выхода нажми «Назад».",
-            parse_mode="HTML", reply_markup=admin_back_keyboard(),
+            "Для выхода нажми «🛑 Отмена».",
+            parse_mode="HTML", reply_markup=wizard_cancel_keyboard(),
         )
         await callback.answer()
     except Exception:

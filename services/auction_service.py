@@ -6,7 +6,7 @@
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import aiosqlite
@@ -19,7 +19,7 @@ from config import config
 from database import DATABASE_PATH, execute_query, fetch_all, fetch_one
 from services import scheduler_service
 from services.vape_service import give_auction_vape
-from utils.helpers import fmt_dt, format_stats_block, now_utc
+from utils.helpers import fmt_dt, format_stats_block, now_utc, parse_dt
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +68,14 @@ async def create_auction(
     condition: int,
     quantity: int,
     start_price: int,
+    delay_minutes: int | None = None,
 ) -> int:
     """Создаёт запись аукциона со статусом 'announced'.
 
     Валидирует входные данные, запрещает запуск второго аукциона одновременно.
+
+    Args:
+        delay_minutes: через сколько минут начнутся торги (None — из конфига).
 
     Returns:
         ID созданного аукциона (его номер).
@@ -83,6 +87,10 @@ async def create_auction(
         raise ValueError("Название лота не может быть пустым")
     if start_price <= 0:
         raise ValueError("Стартовая цена должна быть больше нуля")
+    if delay_minutes is None:
+        delay_minutes = config.auction_announce_minutes
+    if delay_minutes < 1 or delay_minutes > 1440:
+        raise ValueError("Задержка старта должна быть от 1 минуты до 24 часов")
     for key, value in (
         ("multiplier", multiplier), ("power", power), ("max_puffs", max_puffs),
         ("condition", condition), ("quantity", quantity),
@@ -97,11 +105,13 @@ async def create_auction(
     auction_id = await execute_query(
         """
         INSERT INTO auctions (lot_name, multiplier, power, max_puffs, condition,
-                              quantity, start_price, status, channel_id, current_lot_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'announced', ?, 1)
+                              quantity, start_price, status, channel_id, current_lot_number,
+                              starts_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'announced', ?, 1, ?)
         """,
         (lot_name.strip(), multiplier, power, max_puffs, condition,
-         quantity, start_price, config.auction_channel_id),
+         quantity, start_price, config.auction_channel_id,
+         fmt_dt(now_utc() + timedelta(minutes=delay_minutes))),
     )
     logger.info("Создан аукцион #%s: %s (x%d, партия %d шт)", auction_id, lot_name, multiplier, quantity)
     return auction_id
@@ -116,6 +126,27 @@ def _bid_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="+1000 💨", callback_data="bid:1000")
     builder.adjust(4)
     return builder.as_markup()
+
+
+def format_countdown(remaining_seconds: int) -> str:
+    """Форматирует обратный отсчёт до события (старт торгов / конец лота).
+
+    Правила: меньше минуты — посекундный отсчёт ('N сек');
+    минуту и больше — отсчёт в минутах и часах, который меняется раз в минуту.
+
+    Args:
+        remaining_seconds: сколько секунд осталось (значения <= 0 дают 'меньше минуты').
+
+    Returns:
+        Строка вида '5 сек', '3 мин', '1 ч 5 мин', '2 ч'.
+    """
+    if remaining_seconds < 60:
+        return f"{max(0, remaining_seconds)} сек"
+    minutes: int = remaining_seconds // 60
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours, mins = divmod(minutes, 60)
+    return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
 
 
 def _lot_caption(auction: dict[str, Any], bid_row: dict[str, Any] | None, ends_at: Any = None) -> str:
@@ -135,7 +166,13 @@ def _lot_caption(auction: dict[str, Any], bid_row: dict[str, Any] | None, ends_a
     ]
     status: str = auction["status"]
     if status == "announced":
-        lines.append(f"⏳ Старт торгов через {config.auction_announce_minutes} мин.")
+        # Отсчёт до старта торгов: <1 мин — посекундно, иначе — поминутно
+        starts_at = parse_dt(auction.get("starts_at"))
+        if starts_at is not None:
+            remaining: int = max(0, int((starts_at - datetime.now()).total_seconds()))
+            lines.append(f"⏳ Старт торгов через {format_countdown(remaining)}.")
+        else:
+            lines.append(f"⏳ Старт торгов через {config.auction_announce_minutes} мин.")
         lines.append(f"🏁 Стартовая цена: {auction['start_price']} Паров")
     elif status == "active":
         lot_no: int = int(auction["current_lot_number"])
@@ -351,20 +388,49 @@ async def refresh_timer(bot: Bot) -> None:
     """Фоновая задача каждые 5 секунд: обновляет таймер в посте активного аукциона.
 
     Если дедлайн истёк — закрытие лота выполняет отдельная задача APScheduler,
-    здесь только перерисовка секунд.
+    здесь только перерисовка секунд. Дополнительно, если сейчас есть аукцион в
+    статусе 'announced' и до его старта меньше минуты — посекундно обновляется
+    обратный отсчёт анонса (поминутно его обновляет _announce_timer_job).
     """
     auction = await fetch_one("SELECT * FROM auctions WHERE status = 'active' ORDER BY id LIMIT 1")
-    if auction is None:
-        return
-    deadline = scheduler_service.BID_DEADLINES.get(int(auction["id"]))
-    if deadline is None:
-        return
-    leading = await fetch_one(
-        "SELECT b.*, u.username FROM bids b LEFT JOIN users u ON u.user_id = b.user_id "
-        "WHERE b.auction_id = ? AND b.lot_number = ? AND b.is_winning = 1",
-        (auction["id"], auction["current_lot_number"]),
+    if auction is not None:
+        deadline = scheduler_service.BID_DEADLINES.get(int(auction["id"]))
+        if deadline is not None:
+            leading = await fetch_one(
+                "SELECT b.*, u.username FROM bids b LEFT JOIN users u ON u.user_id = b.user_id "
+                "WHERE b.auction_id = ? AND b.lot_number = ? AND b.is_winning = 1",
+                (auction["id"], auction["current_lot_number"]),
+            )
+            await update_channel_post(bot, auction, dict(leading) if leading else None, deadline)
+
+    # Посекундный отсчёт последних <60 сек перед стартом торгов анонса
+    announced = await get_announced_auction()
+    if announced is not None:
+        starts_at = parse_dt(announced.get("starts_at"))
+        if starts_at is not None:
+            remaining: int = int((starts_at - datetime.now()).total_seconds())
+            if 0 <= remaining < 60:
+                await update_channel_post(bot, announced, None)
+
+
+async def get_announced_auction() -> dict[str, Any] | None:
+    """Возвращает последний аукцион в статусе 'announced' (или None)."""
+    return await fetch_one(
+        "SELECT * FROM auctions WHERE status = 'announced' ORDER BY id DESC LIMIT 1"
     )
-    await update_channel_post(bot, auction, dict(leading) if leading else None, deadline)
+
+
+async def update_announce_countdown(bot: Bot) -> bool:
+    """Обновляет пост-анонс в канале (строка с обратным отсчётом до старта торгов).
+
+    Returns:
+        True, если анонс найден и пост обновлён; False — нечего обновлять.
+    """
+    auction = await get_announced_auction()
+    if auction is None or not auction.get("message_id"):
+        return False
+    await update_channel_post(bot, auction, None)
+    return True
 
 
 async def close_lot(bot: Bot, auction_id: int) -> None:
