@@ -31,6 +31,18 @@ class AuctionConfirmCallback(CallbackData, prefix="confirm"):
     draft_id: int
 
 
+def wizard_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура с одной кнопкой «🛑 Отмена» для шагов админ-мастеров.
+
+    Показывается на каждом шаге создания аукциона, выдачи и изъятия подиков,
+    чтобы мастер можно было прервать в любой момент одним нажатием.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🛑 Отмена", callback_data="admin_cancel_wizard")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def auction_confirm_keyboard(draft_id: int) -> InlineKeyboardMarkup:
     """Клавиатура подтверждения: [Запустить аукцион] / [Отмена]."""
     builder = InlineKeyboardBuilder()

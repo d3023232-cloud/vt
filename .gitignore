@@ -1,1 +1,6 @@
-(empty)
+# Compiled files
+__pycache__/
+*.pyc
+
+# Environment/Database
+vape_tycoon.db

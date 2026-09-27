@@ -98,7 +98,7 @@ def _fmt_delay(seconds: int) -> str:
     return f"{minutes} мин" if seconds % 60 == 0 else f"{minutes} мин {seconds % 60} сек"
 
 
-@router.message(CommandObj())
+@router.message(F.text.startswith("/"))
 async def cmd_any_command(message: Message, state: FSMContext) -> None:
     """Любая команда (включая /admin и все игровые) сбрасывает активный мастер.
 
