@@ -140,9 +140,9 @@ def shutdown_scheduler() -> None:
         logger.info("APScheduler остановлен")
 
 
-def schedule_auction_start(auction_id: int, delay_minutes: int) -> None:
-    """Планирует старт торгов через delay_minutes минут после анонса."""
-    run_at: datetime = datetime.now() + timedelta(minutes=delay_minutes)
+def schedule_auction_start(auction_id: int, delay_seconds: int) -> None:
+    """Планирует старт торгов через delay_seconds секунд после анонса."""
+    run_at: datetime = datetime.now() + timedelta(seconds=delay_seconds)
     scheduler.add_job(
         _start_bidding_job, "date", run_date=run_at, args=[auction_id],
         id=_job_id("start", auction_id), replace_existing=True,

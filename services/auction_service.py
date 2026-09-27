@@ -68,14 +68,14 @@ async def create_auction(
     condition: int,
     quantity: int,
     start_price: int,
-    delay_minutes: int | None = None,
+    delay_seconds: int | None = None,
 ) -> int:
     """Создаёт запись аукциона со статусом 'announced'.
 
     Валидирует входные данные, запрещает запуск второго аукциона одновременно.
 
     Args:
-        delay_minutes: через сколько минут начнутся торги (None — из конфига).
+        delay_seconds: через сколько секунд начнутся торги (None — из конфига).
 
     Returns:
         ID созданного аукциона (его номер).
@@ -87,10 +87,10 @@ async def create_auction(
         raise ValueError("Название лота не может быть пустым")
     if start_price <= 0:
         raise ValueError("Стартовая цена должна быть больше нуля")
-    if delay_minutes is None:
-        delay_minutes = config.auction_announce_minutes
-    if delay_minutes < 1 or delay_minutes > 1440:
-        raise ValueError("Задержка старта должна быть от 1 минуты до 24 часов")
+    if delay_seconds is None:
+        delay_seconds = config.auction_announce_minutes * 60
+    if delay_seconds < 10 or delay_seconds > 86400:
+        raise ValueError("Задержка старта должна быть от 10 секунд до 24 часов")
     for key, value in (
         ("multiplier", multiplier), ("power", power), ("max_puffs", max_puffs),
         ("condition", condition), ("quantity", quantity),
@@ -111,7 +111,7 @@ async def create_auction(
         """,
         (lot_name.strip(), multiplier, power, max_puffs, condition,
          quantity, start_price, config.auction_channel_id,
-         fmt_dt(now_utc() + timedelta(minutes=delay_minutes))),
+         fmt_dt(now_utc() + timedelta(seconds=delay_seconds))),
     )
     logger.info("Создан аукцион #%s: %s (x%d, партия %d шт)", auction_id, lot_name, multiplier, quantity)
     return auction_id
