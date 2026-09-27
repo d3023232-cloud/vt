@@ -1,10 +1,1 @@
-# Compiled and cache files
-__pycache__/
-*.pyc
-
-# Logs and temporary files
-probe_out.log
-e2e_test_tmp.py*.db
-
-*.db
-__pycache__/
+(empty)
