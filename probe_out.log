@@ -1,0 +1,44 @@
+INFO:database:База данных инициализирована: vape_tycoon.db
+INFO:middlewares.logging_middleware:Message in chat id=8319217707 type=private title=None from user id=8319217707
+INFO:aiogram.event:Update id=1 is handled. Duration 1 ms by bot id=123456
+INFO:database:База данных инициализирована: vape_tycoon.db
+INFO:middlewares.logging_middleware:Message in chat id=8319217707 type=private title=None from user id=8319217707
+INFO:aiogram.event:Update id=1 is handled. Duration 6 ms by bot id=123456
+INFO:database:База данных инициализирована: vape_tycoon.db
+routers=['?'] -> result=None
+>>> BOT ANSWER:
+💨 <b>Vape Tycoon — экономическая игра</b>
+👤 Игрок: <code>8319217707</code>
+⚖️ Баланс: <b>0 Паров</b>
+
+💨 <b>Basic Vape</b> <i>[экипирован]</i>
+   💠 Множитель: x1
+   💧 Мощность: 5 зат./мин
+   🛢 Бак: 0/100 затяжек
+   🔋 Состояние: 🟢 100%
+   💨 Готово к сбору: ≈ 0 Паров
+
+🔨 Сейчас нет активных аукционов. С
+routers=['?'] -> result=None
+Traceback (most recent call last):
+  File "/workspace/probe2.py", line 47, in <module>
+    asyncio.run(main())
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/workspace/probe2.py", line 45, in main
+    await probe([admin.router, auction.router, inventory.router, start.router])
+  File "/workspace/probe2.py", line 33, in probe
+    dp.include_router(r)
+  File "/usr/local/lib/python3.12/site-packages/aiogram/dispatcher/router.py", line 278, in include_router
+    router.parent_router = self
+    ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/aiogram/dispatcher/router.py", line 239, in parent_router
+    raise RuntimeError(msg)
+RuntimeError: Router is already attached to <Dispatcher '0x7faacec0aae0'>
