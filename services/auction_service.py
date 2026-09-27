@@ -149,6 +149,13 @@ def format_countdown(remaining_seconds: int) -> str:
     return f"{hours} ч {mins} мин" if mins else f"{hours} ч"
 
 
+def announce_bucket(remaining_seconds: int) -> int:
+    """«Корзина» обратного отсчёта анонса: до старта >1 мин — полные минуты,
+    иначе — оставшиеся секунды. Пока корзина не изменилась, пост НЕ редактируется
+    (защита от флуда edit_message_text и лишних логов «message is not modified»)."""
+    return remaining_seconds // 60 if remaining_seconds >= 60 else max(0, remaining_seconds)
+
+
 def _lot_caption(auction: dict[str, Any], bid_row: dict[str, Any] | None, ends_at: Any = None) -> str:
     """Формирует текст поста-лота в канале (анонс / торги / финал)."""
     lines: list[str] = [
@@ -234,6 +241,11 @@ async def publish_announce(bot: Bot, auction_id: int) -> int | None:
         return None
 
 
+# Кэш последних «корзин» отсчёта анонсов: auction_id -> bucket.
+# Пока число не изменилось, пост не редактируется (см. announce_bucket).
+_ANNOUNCE_BUCKET: dict[int, int] = {}
+
+
 async def update_channel_post(bot: Bot, auction: dict[str, Any], bid_row: dict[str, Any] | None,
                               ends_at: Any = None) -> None:
     """Редактирует пост в канале с актуальным состоянием торгов (ставка/лидер/таймер)."""
@@ -253,6 +265,31 @@ async def update_channel_post(bot: Bot, auction: dict[str, Any], bid_row: dict[s
             logger.warning("Не удалось обновить пост аукциона #%s: %s", auction["id"], exc)
 
 
+def _announce_remaining(auction: dict[str, Any]) -> int | None:
+    """Сколько секунд осталось до старта торгов анонса (или None, если даты нет)."""
+    starts_at = parse_dt(auction.get("starts_at"))
+    if starts_at is None:
+        return None
+    return max(0, int((starts_at - datetime.now()).total_seconds()))
+
+
+def _should_refresh_announce(auction: dict[str, Any]) -> bool:
+    """True, если строка отсчёта в посте изменится с прошлого обновления.
+
+    Обновляем пост только когда значение реально меняется: поминутно (пока до
+    старта >=1 мин) и посекундно (последние <60 сек). Иначе — пропускаем edit.
+    """
+    remaining = _announce_remaining(auction)
+    if remaining is None:
+        return True
+    auction_id: int = int(auction["id"])
+    bucket: int = announce_bucket(remaining)
+    if _ANNOUNCE_BUCKET.get(auction_id) == bucket:
+        return False
+    _ANNOUNCE_BUCKET[auction_id] = bucket
+    return True
+
+
 async def start_bidding(bot: Bot, auction_id: int) -> None:
     """Стартует торги: статус 'active', started_at, обнуление current_lot_number, обновление поста."""
     auction = await get_auction(auction_id)
@@ -265,6 +302,7 @@ async def start_bidding(bot: Bot, auction_id: int) -> None:
     )
     auction = await get_auction(auction_id)
     assert auction is not None
+    forget_announce(auction_id)
     scheduler_service.reset_bid_deadline(auction_id, config.bid_timer_seconds)
     scheduler_service.schedule_lot_close(auction_id, config.bid_timer_seconds)
     await update_channel_post(bot, auction, None, _get_deadline(auction_id))
@@ -406,11 +444,9 @@ async def refresh_timer(bot: Bot) -> None:
     # Посекундный отсчёт последних <60 сек перед стартом торгов анонса
     announced = await get_announced_auction()
     if announced is not None:
-        starts_at = parse_dt(announced.get("starts_at"))
-        if starts_at is not None:
-            remaining: int = int((starts_at - datetime.now()).total_seconds())
-            if 0 <= remaining < 60:
-                await update_channel_post(bot, announced, None)
+        remaining = _announce_remaining(announced)
+        if remaining is not None and remaining < 60 and _should_refresh_announce(announced):
+            await update_channel_post(bot, announced, None)
 
 
 async def get_announced_auction() -> dict[str, Any] | None:
@@ -423,14 +459,24 @@ async def get_announced_auction() -> dict[str, Any] | None:
 async def update_announce_countdown(bot: Bot) -> bool:
     """Обновляет пост-анонс в канале (строка с обратным отсчётом до старта торгов).
 
+    Пост редактируется только когда число в отсчёте реально меняется
+    (поминутно, пока до старта >=1 мин; последние <60 сек обрабатывает _timer_job).
+
     Returns:
         True, если анонс найден и пост обновлён; False — нечего обновлять.
     """
     auction = await get_announced_auction()
     if auction is None or not auction.get("message_id"):
         return False
+    if not _should_refresh_announce(auction):
+        return False
     await update_channel_post(bot, auction, None)
     return True
+
+
+def forget_announce(auction_id: int) -> None:
+    """Убирает кэш отсчёта анонса (при старте торгов/отмене — профилактика утечки)."""
+    _ANNOUNCE_BUCKET.pop(int(auction_id), None)
 
 
 async def close_lot(bot: Bot, auction_id: int) -> None:
@@ -649,6 +695,7 @@ async def cancel_auction(bot: Bot, auction_id: int, notify_admin: bool = True) -
 
     from services import scheduler_service
     scheduler_service.cancel_auction_jobs(auction_id)
+    forget_announce(auction_id)
 
     try:
         await bot.send_message(
