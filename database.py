@@ -112,24 +112,18 @@ async def fetch_one(query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] 
     """Выполняет запрос и возвращает одну строку в виде словаря (или None)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
-        try:
-            cursor = await db.execute(query, params)
-            row = await cursor.fetchone()
-            return dict(row) if row is not None else None
-        finally:
-            await db.close()
+        cursor = await db.execute(query, params)
+        row = await cursor.fetchone()
+        return dict(row) if row is not None else None
 
 
 async def fetch_all(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     """Выполняет запрос и возвращает список строк-словарей."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
-        try:
-            cursor = await db.execute(query, params)
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            await db.close()
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
 
 async def execute_query(query: str, params: tuple[Any, ...] = ()) -> int:
