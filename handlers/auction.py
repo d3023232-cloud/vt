@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from config import config
 from keyboards.main_kb import auction_channel_keyboard
 from services import auction_service, vape_service
-from utils.helpers import channel_mention
+from utils.helpers import channel_mention, format_stats_block
 
 logger = logging.getLogger(__name__)
 router: Router = Router()
@@ -35,11 +35,17 @@ async def cmd_auction(message: Message) -> None:
             text = (
                 f"🔨 <b>Аукцион #{auction['id']}</b> — "
                 f"{status_map.get(auction['status'], auction['status'])}\n"
-                f"📦 Лот: <b>{auction['lot_name']}</b> (x{auction['multiplier']}, "
-                f"{auction['power']} зат./мин, бак {auction['max_puffs']}, "
-                f"состояние {auction['condition']}%)\n"
-                f"Партия: {auction['quantity']} шт, продано: {auction['lots_sold']}\n"
-                f"💰 Стартовая цена: {auction['start_price']} Паров\n"
+                + format_stats_block(
+                    name=auction["lot_name"],
+                    multiplier=auction["multiplier"],
+                    power=auction["power"],
+                    max_puffs=auction["max_puffs"],
+                    condition=auction["condition"],
+                    quantity=auction["quantity"],
+                    lots_sold=auction["lots_sold"],
+                    indent="   ",
+                )
+                + f"\n💰 Стартовая цена: {auction['start_price']} Паров\n"
                 f"⚖️ Твой баланс: {user['balance']} Паров\n\n"
                 f"Делай ставки кнопками [+100]/[+250]/[+500]/[+1000] под постом в {channel_mention()}"
             )

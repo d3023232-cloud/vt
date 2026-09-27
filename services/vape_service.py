@@ -23,6 +23,15 @@ STARTER_MULTIPLIER: int = 1
 STARTER_POWER: int = 5
 STARTER_MAX_PUFFS: int = 100
 
+# Диапазоны допустимых значений параметров при админ-выдаче подиков
+LOT_PARAM_LIMITS: dict[str, tuple[int, int]] = {
+    "multiplier": (1, 100),
+    "power": (1, 1000),
+    "max_puffs": (10, 100000),
+    "condition": (1, 100),
+    "quantity": (1, 10),
+}
+
 
 async def register_user(user_id: int, username: str | None) -> dict[str, Any]:
     """Регистрирует нового игрока и выдаёт стартовый подик.
@@ -365,3 +374,123 @@ async def give_auction_vape(
     )
     logger.info("Игрок %s получил подик #%s (%s) с аукциона", user_id, vape_id, name)
     return True
+
+
+async def admin_give_vape(
+    user_id: int,
+    name: str,
+    multiplier: int,
+    power: int,
+    max_puffs: int,
+    condition: int,
+    quantity: int = 1,
+) -> tuple[bool, str]:
+    """Выдаёт подик(и) игроку по указанию администратора (админ-панель).
+
+    В отличие от auction-выдачи, игрок НЕ обязан быть зарегистрирован —
+    при необходимости он регистрируется автоматически (без стартового подика,
+    чтобы выдача была честной: ровно то, что выдал админ).
+
+    Args:
+        user_id: Telegram ID получателя.
+        name: название подика.
+        multiplier: множитель дохода.
+        power: мощность (затяжек/мин).
+        max_puffs: объём бака.
+        condition: состояние в %.
+        quantity: сколько копий выдать (1..10).
+
+    Returns:
+        (успех, сообщение для админа).
+    """
+    if not name.strip():
+        return False, "Название подика не может быть пустым."
+    for label, value, low, high in (
+        ("множитель", multiplier, *LOT_PARAM_LIMITS["multiplier"]),
+        ("мощность", power, *LOT_PARAM_LIMITS["power"]),
+        ("бак", max_puffs, *LOT_PARAM_LIMITS["max_puffs"]),
+        ("состояние", condition, *LOT_PARAM_LIMITS["condition"]),
+        ("количество", quantity, *LOT_PARAM_LIMITS["quantity"]),
+    ):
+        if not low <= int(value) <= high:
+            return False, f"Параметр «{label}»={value} вне диапазона {low}..{high}."
+
+    user = await get_user(user_id)
+    if user is None:
+        # Регистрируем игрока без стартового подика: создаём только запись users
+        await execute_query(
+            "INSERT INTO users (user_id, username, balance, last_collect_time) "
+            "VALUES (?, NULL, 0, ?)",
+            (user_id, fmt_dt(now_utc())),
+        )
+        logger.info("Админ-выдача: зарегистрирован игрок %s без стартового подика", user_id)
+
+    count: int = await count_user_vapes(user_id)
+    free: int = config.max_vapes_per_user - count
+    if free <= 0:
+        return False, (f"Инвентарь игрока {user_id} полон ({count}/{config.max_vapes_per_user}). "
+                       f"Сначала удали часть подиков (⛏ Забрать подики).")
+    to_give: int = min(int(quantity), free)
+
+    safe_condition: int = min(100, max(0, int(condition)))
+    given_ids: list[int] = []
+    for _ in range(to_give):
+        vape_id = await execute_query(
+            """
+            INSERT INTO vapes (owner_id, name, multiplier, power, max_puffs,
+                               current_puffs, condition, puffs_per_vapor, is_equipped, is_broken)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0, 0)
+            """,
+            (user_id, name.strip(), int(multiplier), int(power), int(max_puffs),
+             safe_condition, config.puffs_per_vapor),
+        )
+        given_ids.append(int(vape_id))
+
+    # Если у игрока нет экипированного подика — экипируем первый выданный
+    equipped_now: bool = False
+    if await get_equipped_vape(user_id) is None and given_ids:
+        ok_equip, _ = await equip_vape(user_id, given_ids[0])
+        equipped_now = ok_equip
+
+    skipped: int = int(quantity) - to_give
+    msg: str = (f"✅ Выдано {to_give} шт «{name.strip()}» игроку {user_id}"
+                + ("" if skipped == 0 else f" (пропущено {skipped} — нет места в инвентаре)"))
+    if equipped_now:
+        msg += "\n💨 Первый подик экипирован автоматически."
+    logger.info("Админ-выдача подика игроку %s: %s", user_id, msg)
+    return True, msg
+
+
+async def admin_remove_vape(user_id: int, vape_id: int) -> tuple[bool, str]:
+    """Изымает (удаляет) конкретный подик игрока по указанию администратора.
+
+    В отличие от discard_vape, ограничение «только сломанные» не действует —
+    админ может забрать любой подик. Если подик был экипирован — экипировка
+    владельца сбрасывается.
+
+    Returns:
+        (успех, сообщение для админа).
+    """
+    vape = await fetch_one("SELECT * FROM vapes WHERE id = ?", (vape_id,))
+    if vape is None:
+        return False, f"Подик #{vape_id} не найден."
+    if int(vape["owner_id"]) != user_id:
+        return False, (f"Подик #{vape_id} принадлежит игроку {vape['owner_id']}, "
+                       f"а не {user_id}. Проверь ID.")
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        try:
+            await db.execute("DELETE FROM vapes WHERE id = ? AND owner_id = ?", (vape_id, user_id))
+            await db.execute(
+                "UPDATE users SET equipped_vape_id = NULL WHERE user_id = ? AND equipped_vape_id = ?",
+                (user_id, vape_id),
+            )
+            await db.commit()
+        except aiosqlite.Error:
+            await db.rollback()
+            logger.exception("Ошибка изъятия подика #%s у игрока %s", vape_id, user_id)
+            return False, "Ошибка при изъятии, попробуй позже."
+        finally:
+            await db.close()
+    logger.info("Админ изъял подик #%s («%s») у игрока %s", vape_id, vape["name"], user_id)
+    return True, f"🗑 Изят подик #{vape_id} «{vape['name']}» у игрока {user_id}."

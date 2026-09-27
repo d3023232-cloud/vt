@@ -83,18 +83,88 @@ def condition_emoji(condition: int) -> str:
     return "🔴"
 
 
+def power_emoji(power: int) -> str:
+    """Индикация мощности подика: чем выше — тем «злее» смайлик."""
+    if power >= 50:
+        return "🔥"
+    if power >= 20:
+        return "⚡"
+    return "💧"
+
+
+def format_stats_block(
+    name: str | None = None,
+    multiplier: int | None = None,
+    power: int | None = None,
+    max_puffs: int | None = None,
+    condition: int | None = None,
+    current_puffs: int | None = None,
+    quantity: int | None = None,
+    lots_sold: int | None = None,
+    indent: str = "",
+) -> str:
+    """Единый формат статистики подика/лота — каждая строка с новой строки и со своим смайликом.
+
+    Используется ВЕЗДЕ: карточки в боте (главный экран, инвентарь, экран аукциона),
+    посты в канале аукционов и превью в админ-панели. Параметры, равные None,
+    просто не выводятся.
+
+    Смайлики: 💨 название | 💠 множитель | ⚡/🔥/💧 мощность | 🛢 бак |
+    🔋/🟢🟡🔴 состояние | 📦 партия.
+
+    Args:
+        name: название подика/лота (выводится жирным, если задано).
+        multiplier: множитель дохода (x N).
+        power: мощность в затяжках в минуту.
+        max_puffs: объём бака.
+        condition: состояние в процентах (0..100).
+        current_puffs: текущая заполненность бака (если None — бак показывается как ёмкость).
+        quantity: количество штук в партии (для аукционных лотов).
+        lots_sold: сколько лотов уже продано (для аукционных лотов).
+        indent: префикс-отступ для всех строк блока.
+
+    Returns:
+        Готовая HTML-строка блока (строки разделены \\n).
+    """
+    lines: list[str] = []
+    if name is not None:
+        lines.append(f"{indent}💨 <b>{name}</b>")
+    if multiplier is not None:
+        lines.append(f"{indent}💠 Множитель: x{int(multiplier)}")
+    if power is not None:
+        p = int(power)
+        lines.append(f"{indent}{power_emoji(p)} Мощность: {p} зат./мин")
+    if max_puffs is not None:
+        mp = int(max_puffs)
+        if current_puffs is not None:
+            lines.append(f"{indent}🛢 Бак: {int(current_puffs)}/{mp} затяжек")
+        else:
+            lines.append(f"{indent}🛢 Бак: {mp} затяжек")
+    if condition is not None:
+        c = min(100, max(0, int(condition)))
+        lines.append(f"{indent}🔋 Состояние: {condition_emoji(c)} {c}%")
+    if quantity is not None:
+        sold_part = f", продано: {int(lots_sold)}" if lots_sold is not None else ""
+        lines.append(f"{indent}📦 Партия: {int(quantity)} шт{sold_part}")
+    return "\n".join(lines)
+
+
 def format_vape(vape: dict[str, Any]) -> str:
     """Формирует карточку подика для отображения в инвентаре / основном экране."""
     cond: int = int(vape["condition"])
-    emoji: str = condition_emoji(cond)
     current_puffs: int = int(vape["current_puffs"])
     lines: list[str] = [
         f"{'🔧' if vape['is_broken'] else '💨'} <b>{vape['name']}</b>"
         + (" <i>(сломан)</i>" if vape["is_broken"] else "")
         + (" <i>[экипирован]</i>" if vape["is_equipped"] else ""),
-        f"   Множитель: x{vape['multiplier']} | Мощность: {vape['power']} зат./мин",
-        f"   Бак: {current_puffs}/{vape['max_puffs']} затяжек",
-        f"   Состояние: {emoji} {cond}%",
+        format_stats_block(
+            multiplier=vape["multiplier"],
+            power=vape["power"],
+            max_puffs=vape["max_puffs"],
+            condition=cond,
+            current_puffs=current_puffs,
+            indent="   ",
+        ),
     ]
     if vape["is_broken"]:
         lines.append("   ⛔ Подик сломан, его можно выбросить.")

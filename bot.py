@@ -12,6 +12,7 @@ from config import config
 from database import init_db
 from handlers import admin, auction, inventory, start
 from middlewares.admin_check import AdminCheckMiddleware
+from middlewares.logging_middleware import LoggingMiddleware
 from services import scheduler_service
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,10 @@ async def main() -> None:
     # Middleware проверки прав администратора для всех входящих событий
     dp.message.middleware(AdminCheckMiddleware())
     dp.callback_query.middleware(AdminCheckMiddleware())
+
+    # Логирование ID чатов (позволяет узнать ID канала: перешлите сообщение из него боту)
+    dp.message.outer_middleware(LoggingMiddleware())
+    dp.callback_query.outer_middleware(LoggingMiddleware())
 
     # Подключение роутеров. Порядок важен: роутер /start подключаем последним,
     # чтобы его широкие callback-фильтры не перехватывали чужие события раньше времени.
