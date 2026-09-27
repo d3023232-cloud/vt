@@ -8,8 +8,8 @@
 import logging
 from typing import Any
 
-from aiogram import F, Router
-from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -98,37 +98,48 @@ def _fmt_delay(seconds: int) -> str:
     return f"{minutes} мин" if seconds % 60 == 0 else f"{minutes} мин {seconds % 60} сек"
 
 
-@router.message(F.text.startswith("/"))
-async def cmd_any_command(message: Message, state: FSMContext) -> None:
-    """Любая команда (включая /admin и все игровые) сбрасывает активный мастер.
+@router.message(F.text.startswith("/") & StateFilter(WIZARD_STATES))
+async def wizard_break(message: Message, state: FSMContext) -> None:
+    """Любая команда во время активного мастера сбрасывает FSM и не ломает бота.
 
-    Пока идёт мастер (создание аукциона, выдача/изъятие подиков), любой ввод
-    перехватывается его шагами; этот outer-хендлер до срабатывания шагов
-    сбрасывает FSM, поэтому команды (/start, /help, /auction, повторный
-    /admin) проходят как обычно и не вызывают ошибку «неправильная комбинация».
+    Пока идёт мастер (создание аукциона, выдача/изъятие подиков), весь ввод
+    перехватывается его шагами; этот хендлер срабатывает ДО шагов (объявлен
+    раньше них) и только при активном состоянии мастера: очищает FSM и
+    выполняет команду напрямую через её обычный обработчик, поэтому /start,
+    /help, /inventory, /auction и повторный /admin работают как обычно и не
+    вызывают ошибку «неправильная комбинация».
     """
     try:
+        command_text: str = (message.text or "").strip()
         current: str | None = await state.get_state()
-        if current and any(current == str(s) for s in WIZARD_STATES):
-            await state.clear()
-            logger.info("Команда %r прервала активный мастер (состояние %s)",
-                        (message.text or "")[:32], current)
+        if not current or not any(current == str(s) for s in WIZARD_STATES):
+            return
+        await state.clear()
+        logger.info("Команда %r прервала активный мастер (состояние %s)",
+                    command_text[:32], current)
+        await message.answer("⏹ Мастер прерван.")
+        # Выполняем прервавшую мастер команду через её обычный обработчик.
+        base_cmd: str = command_text.split()[0].split("@")[0].lower()
+        if base_cmd == "/start":
+            from handlers.start import cmd_start
+            await cmd_start(message, state)
+        elif base_cmd == "/help":
+            from handlers.start import cmd_help
+            await cmd_help(message)
+        elif base_cmd == "/inventory":
+            from handlers.inventory import cmd_inventory
+            await cmd_inventory(message)
+        elif base_cmd == "/auction":
+            from handlers.auction import cmd_auction
+            await cmd_auction(message)
+        elif base_cmd == "/admin":
+            await cmd_admin(message, state)
+        else:
+            await message.answer(
+                "ℹ️ Команда недоступна во время мастера. Выбери действие кнопками или отправь «🛑 Отмена»."
+            )
     except Exception:
         logger.exception("Ошибка сброса мастера командой")
-
-
-@router.message(CommandStart(), F.chat.type == "private", flags={"skip": {"wizard_break"}})
-async def observe_start(message: Message, state: FSMContext) -> None:
-    """Только для админа: запоминает, что игрок нажал /start.
-
-    Нужен, чтобы при следующем нажатии «🛑 Отмена» (после перехода в роутер
-    start) мастер создания аукциона отменился полностью, а не только FSM.
-    """
-    try:
-        if await state.get_state():
-            await state.update_data(start_seen=True)
-    except Exception:
-        logger.exception("Ошибка наблюдения за /start")
 
 
 @router.message(Command("admin"))
@@ -397,10 +408,9 @@ async def cb_cancel_wizard(callback: CallbackQuery, state: FSMContext) -> None:
     """
     try:
         data: dict[str, Any] = await state.get_data()
-        start_seen: bool = bool(data.get("start_seen"))
         await state.clear()
         text: str = "🛑 Мастер создания/выдачи отменён."
-        if start_seen:
+        if data.get("start_seen"):
             await callback.message.answer(
                 f"{text}\n\n🛠 <b>Админ-панель Vape Tycoon</b>",
                 reply_markup=admin_keyboard(), parse_mode="HTML",
