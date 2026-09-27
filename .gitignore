@@ -4,4 +4,7 @@ __pycache__/
 
 # Logs and temporary files
 probe_out.log
-e2e_test_tmp.py
+e2e_test_tmp.py*.db
+
+*.db
+__pycache__/
