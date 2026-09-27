@@ -98,7 +98,7 @@ def _fmt_delay(seconds: int) -> str:
     return f"{minutes} мин" if seconds % 60 == 0 else f"{minutes} мин {seconds % 60} сек"
 
 
-@router.message(F.text.startswith("/") & StateFilter(WIZARD_STATES))
+@router.message(StateFilter(WIZARD_STATES), F.text.startswith("/"))
 async def wizard_break(message: Message, state: FSMContext) -> None:
     """Любая команда во время активного мастера сбрасывает FSM и не ломает бота.
 

@@ -3,7 +3,7 @@
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -57,7 +57,7 @@ async def build_main_text(user_id: int) -> str:
     return "\n".join(lines)
 
 
-@router.message(CommandStart())
+@router.message(Command(commands=["start"]))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     """Команда /start: регистрация нового игрока либо загрузка существующего.
 
