@@ -1,6 +1,7 @@
-# Logs and temp files
-*.log
-*.tmp
+# Compiled and cache files
+__pycache__/
+*.pyc
 
-# Environment/Database
-vape_tycoon.db
+# Logs and temporary files
+probe_out.log
+e2e_test_tmp.py
