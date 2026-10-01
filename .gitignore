@@ -1,1 +1,6 @@
-(empty)
+__pycache__/
+*.pyc
+*.db
+*.db-journal
+e2e_test_tmp.py
+.env
